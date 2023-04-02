@@ -1,6 +1,3 @@
-//! Blinks the LED on a Pico board
-//!
-//! This will blink an LED attached to GP25, which is the pin the Pico uses for the on-board LED.
 #![no_std]
 #![no_main]
 
@@ -10,10 +7,7 @@ use defmt_rtt as _;
 use embedded_hal::digital::v2::OutputPin;
 use panic_probe as _;
 
-// Provide an alias for our BSP so we can switch targets quickly.
-// Uncomment the BSP you included in Cargo.toml, the rest of the code does not need to change.
 use rp_pico as bsp;
-// use sparkfun_pro_micro_rp2040 as bsp;
 
 use bsp::hal::{
     clocks::{init_clocks_and_plls, Clock},
@@ -53,14 +47,76 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    let mut led_pin = pins.led.into_push_pull_output();
+    // GPIO0 and GPIO1 are used for communicating with the debug probe, so this starts from GPIO2.
+    //
+    // The pin layout of A-551SR:
+    //
+    //   10 9 8 7 6
+    //   ┌───────┐
+    //   │       │
+    //   │       │
+    //   │       │
+    //   │       │
+    //   │       │
+    //   └───────┘
+    //   1 2 3 4 5
+    //
+    // Each pin corresponds to the following segment of the "8".
+    // (3 & 8 are Vin, and 5 is for the right-bottom period)
+    //
+    //     ┌─ 7 ─┐
+    //     9     6
+    //     ├─10 ─┤
+    //     1     4
+    //     └─ 2 ─┘
+    //
+    let mut pin1 = pins.gpio2.into_push_pull_output();
+    let mut pin2 = pins.gpio3.into_push_pull_output();
+    let mut pin3 = pins.gpio4.into_push_pull_output();
+    let mut pin4 = pins.gpio5.into_push_pull_output();
+    let mut pin5 = pins.gpio6.into_push_pull_output();
+    let mut pin6 = pins.gpio7.into_push_pull_output();
+    let mut pin7 = pins.gpio8.into_push_pull_output();
 
     loop {
-        info!("on!");
-        led_pin.set_high().unwrap();
+        info!("pin1");
+        pin1.set_high().unwrap();
         delay.delay_ms(500);
-        info!("off!");
-        led_pin.set_low().unwrap();
+
+        info!("pin2");
+        pin2.set_high().unwrap();
+        delay.delay_ms(500);
+
+        info!("pin3");
+        pin3.set_high().unwrap();
+        delay.delay_ms(500);
+
+        info!("pin4");
+        pin4.set_high().unwrap();
+        delay.delay_ms(500);
+
+        info!("pin5");
+        pin5.set_high().unwrap();
+        pin1.set_low().unwrap();
+        delay.delay_ms(500);
+
+        info!("pin6");
+        pin6.set_high().unwrap();
+        pin2.set_low().unwrap();
+        delay.delay_ms(500);
+
+        info!("pin7");
+        pin7.set_high().unwrap();
+        pin3.set_low().unwrap();
+        delay.delay_ms(500);
+
+        pin4.set_low().unwrap();
+        delay.delay_ms(500);
+        pin5.set_low().unwrap();
+        delay.delay_ms(500);
+        pin6.set_low().unwrap();
+        delay.delay_ms(500);
+        pin7.set_low().unwrap();
         delay.delay_ms(500);
     }
 }
