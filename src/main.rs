@@ -1,40 +1,90 @@
+// ## The pin layout of A-551SR:
+//
+//   10 9 8 7 6
+//   ┌───────┐
+//   │       │
+//   │       │
+//   │       │
+//   │       │
+//   │       │
+//   └───────┘
+//   1 2 3 4 5
+//
+// Each pin corresponds to the following segment of the "8".
+// (3 & 8 are Vin, and 5 is for the right-bottom period)
+//
+//     ┌─ 7 ─┐
+//     9     6
+//     ├─10 ─┤
+//     1     4
+//     └─ 2 ─┘
+//
+// ## 74HC595
+//
+//    ┌─────v─────┐
+//  1 │           │ 16
+//  2 │           │ 15
+//  3 │           │ 14 Input  <------------ GPIO2
+//  4 │           │ 13
+//  5 │           │ 12 Clock for input  <-- GPIO3
+//  6 │           │ 11 Clock for output  <- GPIO4
+//  7 │           │ 10
+//  8 │           │  9
+//    └───────────┘
+
 #![no_std]
 #![no_main]
 
-use bsp::{
-    entry,
-    hal::prelude::*,
-    hal::{gpio::DynPin, pwm::Slices},
-};
-use defmt::*;
+use defmt::info;
 use defmt_rtt as _;
-use embedded_hal::digital::v2::OutputPin;
-use embedded_hal::PwmPin;
-use panic_probe as _;
+// The macro for our start-up function
+use rp_pico::entry;
 
-use rp_pico as bsp;
+// Ensure we halt the program on panic (if we don't mention this crate it won't
+// be linked)
+use panic_halt as _;
 
-use bsp::hal::{
-    clocks::{init_clocks_and_plls, Clock},
-    pac,
-    sio::Sio,
-    watchdog::Watchdog,
-};
+// Pull in any important traits
+use rp_pico::hal::prelude::*;
 
-use libm::sinf;
+// A shorter alias for the Peripheral Access Crate, which provides low-level
+// register access
+use rp_pico::hal::pac;
 
+// A shorter alias for the Hardware Abstraction Layer, which provides
+// higher-level drivers.
+use rp_pico::hal;
+
+// Import pio crates
+use hal::pio::{PIOBuilder, Running, StateMachine, Tx, ValidStateMachine, SM0};
+use pio::{Instruction, InstructionOperands, OutDestination};
+use pio_proc::pio_file;
+
+fn pio_shift_register_set_output<T: ValidStateMachine>(tx: &mut Tx<T>, output: u8) {
+    tx.write(output as u32);
+}
+
+/// Entry point to our bare-metal application.
+///
+/// The `#[entry]` macro ensures the Cortex-M start-up code calls this function
+/// as soon as all global variables are initialised.
+///
+/// The function configures the RP2040 peripherals, then fades the LED in an
+/// infinite loop.
 #[entry]
 fn main() -> ! {
-    info!("Program start");
+    // Grab our singleton objects
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
-    let mut watchdog = Watchdog::new(pac.WATCHDOG);
-    let sio = Sio::new(pac.SIO);
 
-    // External high-speed crystal on the pico board is 12Mhz
-    let external_xtal_freq_hz = 12_000_000u32;
-    let clocks = init_clocks_and_plls(
-        external_xtal_freq_hz,
+    // Set up the watchdog driver - needed by the clock setup code
+    let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
+
+    // Configure the clocks
+    //
+    // The default is to generate a 125 MHz system clock
+    let clocks = hal::clocks::init_clocks_and_plls(
+        rp_pico::XOSC_CRYSTAL_FREQ,
         pac.XOSC,
         pac.CLOCKS,
         pac.PLL_SYS,
@@ -45,148 +95,57 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
+    // The single-cycle I/O block controls our GPIO pins
+    let sio = hal::Sio::new(pac.SIO);
 
-    let pins = bsp::Pins::new(
+    // Set the pins up according to their function on this particular board
+    let pins = rp_pico::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
         sio.gpio_bank0,
         &mut pac.RESETS,
     );
 
-    // GPIO0 and GPIO1 are used for communicating with the debug probe, so this starts from GPIO2.
-    //
-    // The pin layout of A-551SR:
-    //
-    //   10 9 8 7 6
-    //   ┌───────┐
-    //   │       │
-    //   │       │
-    //   │       │
-    //   │       │
-    //   │       │
-    //   └───────┘
-    //   1 2 3 4 5
-    //
-    // Each pin corresponds to the following segment of the "8".
-    // (3 & 8 are Vin, and 5 is for the right-bottom period)
-    //
-    //     ┌─ 7 ─┐
-    //     9     6
-    //     ├─10 ─┤
-    //     1     4
-    //     └─ 2 ─┘
+    // The delay object lets us wait for specified amounts of time (in
+    // milliseconds)
+    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
-    let pwm_slices = Slices::new(pac.PWM, &mut pac.RESETS);
+    let (mut pio0, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
 
-    let mut pwm1 = pwm_slices.pwm1;
-    pwm1.set_ph_correct();
-    pwm1.enable();
+    // Create a pio program
+    let program = pio_file!("./src/shift_register.pio", select_program("shift_register"),);
+    let installed = pio0.install(&program.program).unwrap();
 
-    let mut pwm2 = pwm_slices.pwm2;
-    pwm2.set_ph_correct();
-    pwm2.enable();
+    // Set gpio25 to pio
+    let pin1: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio2.into_mode();
+    let _pin2: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio3.into_mode();
+    let _pin3: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio4.into_mode();
+    let pin1_id = pin1.id().num;
 
-    let mut pwm3 = pwm_slices.pwm3;
-    pwm3.set_ph_correct();
-    pwm3.enable();
+    // Build the pio program and set pin both for set and side set!
+    // We are running with the default divider which is 1 (max speed)
+    let (mut sm, _, mut tx) = PIOBuilder::from_program(installed)
+        .out_pins(pin1_id, 1)
+        .side_set_pin_base(pin1_id + 1)
+        .build(sm0);
 
-    let mut pwm4 = pwm_slices.pwm4;
-    pwm4.set_ph_correct();
-    pwm4.enable();
+    // Set pio pindir for gpio25
+    sm.set_pindirs([
+        (pin1_id, hal::pio::PinDir::Output),
+        (pin1_id + 1, hal::pio::PinDir::Output),
+        (pin1_id + 2, hal::pio::PinDir::Output),
+    ]);
 
-    info!("TOP: {}", pwm1.get_top());
-    pwm1.set_top(u16::MAX);
-    pwm2.set_top(u16::MAX);
-    pwm3.set_top(u16::MAX);
-    pwm4.set_top(u16::MAX);
+    // Start state machine
+    let sm = sm.start();
 
-    let pwm1 = pwm1.into_mode::<bsp::hal::pwm::FreeRunning>();
-    let mut ch_a1 = pwm1.channel_a;
-    let mut ch_b1 = pwm1.channel_b;
-    ch_a1.output_to(pins.gpio2);
-    ch_b1.output_to(pins.gpio3);
-
-    let pwm2 = pwm2.into_mode::<bsp::hal::pwm::FreeRunning>();
-    let mut ch_a2 = pwm2.channel_a;
-    let mut ch_b2 = pwm2.channel_b;
-    ch_a2.output_to(pins.gpio4);
-    ch_b2.output_to(pins.gpio5);
-
-    let pwm3 = pwm3.into_mode::<bsp::hal::pwm::FreeRunning>();
-    let mut ch_a3 = pwm3.channel_a;
-    let mut ch_b3 = pwm3.channel_b;
-    ch_a3.output_to(pins.gpio6);
-    ch_b3.output_to(pins.gpio7);
-
-    let pwm4 = pwm4.into_mode::<bsp::hal::pwm::FreeRunning>();
-    let mut ch_a4 = pwm4.channel_a;
-    ch_a4.output_to(pins.gpio8);
-
-    // // Every GPIO has a different type, so we cannot bundle them as an array.
-    // // But, we can convert them to DynPin.
-    // let mut led_pins: [DynPin; 7] = [
-    //     pins.gpio2.into_mode::<bsp::hal::gpio::FunctionPwm>().into(),
-    //     pins.gpio3.into_mode::<bsp::hal::gpio::FunctionPwm>().into(),
-    //     pins.gpio4.into_mode::<bsp::hal::gpio::FunctionPwm>().into(),
-    //     pins.gpio5.into_mode::<bsp::hal::gpio::FunctionPwm>().into(),
-    //     pins.gpio6.into_mode::<bsp::hal::gpio::FunctionPwm>().into(),
-    //     pins.gpio7.into_mode::<bsp::hal::gpio::FunctionPwm>().into(),
-    //     pins.gpio8.into_mode::<bsp::hal::gpio::FunctionPwm>().into(),
-    // ];
-
-    let d = u16::MAX as f32 * 0.5;
-    let mut phase = 0.0;
+    // Loop forever and adjust duty cycle to make te led brighter
+    let mut level = 0;
     loop {
-        ch_a1.set_duty((d + d * sinf((phase + 0.00) * 2.0 * 3.1415)) as _);
-        ch_b1.set_duty((d + d * sinf((phase + 0.07) * 2.0 * 3.1415)) as _);
-        ch_a2.set_duty((d + d * sinf((phase + 0.14) * 2.0 * 3.1415)) as _);
-        ch_b2.set_duty((d + d * sinf((phase + 0.21) * 2.0 * 3.1415)) as _);
-        ch_a3.set_duty((d + d * sinf((phase + 0.28) * 2.0 * 3.1415)) as _);
-        ch_b3.set_duty((d + d * sinf((phase + 0.35) * 2.0 * 3.1415)) as _);
-        ch_a4.set_duty((d + d * sinf((phase + 0.42) * 2.0 * 3.1415)) as _);
-
-        delay.delay_ms(17);
-        phase += 0.01;
-        // info!("pin1");
-        // led_pins[0].set_high().unwrap();
-        // delay.delay_ms(50);
-
-        // info!("pin2");
-        // led_pins[1].set_high().unwrap();
-        // delay.delay_ms(500);
-
-        // info!("pin3");
-        // led_pins[2].set_high().unwrap();
-        // delay.delay_ms(500);
-
-        // info!("pin4");
-        // led_pins[3].set_high().unwrap();
-        // delay.delay_ms(500);
-
-        // info!("pin5");
-        // led_pins[4].set_high().unwrap();
-        // led_pins[0].set_low().unwrap();
-        // delay.delay_ms(500);
-
-        // info!("pin6");
-        // led_pins[5].set_high().unwrap();
-        // led_pins[1].set_low().unwrap();
-        // delay.delay_ms(500);
-
-        // info!("pin7");
-        // led_pins[6].set_high().unwrap();
-        // led_pins[2].set_low().unwrap();
-        // delay.delay_ms(500);
-
-        // led_pins[3].set_low().unwrap();
-        // delay.delay_ms(500);
-        // led_pins[4].set_low().unwrap();
-        // delay.delay_ms(500);
-        // led_pins[5].set_low().unwrap();
-        // delay.delay_ms(500);
-        // led_pins[6].set_low().unwrap();
-        // delay.delay_ms(500);
+        info!("Level = {}", level);
+        pio_shift_register_set_output(&mut tx, level);
+        level = level.wrapping_add(1);
+        delay.delay_ms(250);
     }
 }
 

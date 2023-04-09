@@ -25,6 +25,10 @@ rp-pico = "0.7"
 # for math functions
 libm = "*"
 
+panic-halt = "0.2.0"
+pio = "0.2.0"
+pio-proc = "0.2.1"
+
 # cargo build/run
 [profile.dev]
 codegen-units = 1
