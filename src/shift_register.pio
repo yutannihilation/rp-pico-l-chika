@@ -5,7 +5,7 @@
 
 .wrap_target
     pull   block      side 0b00
-    set    x, 31      side 0b00   ; x is a counter
+    set    x, 7       side 0b00   ; x is a counter
 loop:
     out    pins, 1    side 0b10
     jmp    x-- loop   side 0b00   ; if we finished to set 8 bit, end loop

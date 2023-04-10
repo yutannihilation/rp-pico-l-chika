@@ -10,7 +10,7 @@
 //   └───────┘
 //   1 2 3 4 5
 //
-// Each pin corresponds to the following segment of the "8".
+// Each pin corresponds to the following positions of the 7 segments.
 // (3 & 8 are Vin, and 5 is for the right-bottom period)
 //
 //     ┌─ 7 ─┐
@@ -56,12 +56,46 @@ use rp_pico::hal::pac;
 use rp_pico::hal;
 
 // Import pio crates
-use hal::pio::{PIOBuilder, Running, StateMachine, Tx, ValidStateMachine, SM0};
-use pio::{Instruction, InstructionOperands, OutDestination};
+use hal::pio::{PIOBuilder, Tx, ValidStateMachine};
 use pio_proc::pio_file;
 
+struct PwmData {
+    pwm_levels: [u8; 8],
+    expanded_data: [u8; 256],
+}
+
+impl PwmData {
+    fn new() -> Self {
+        Self {
+            pwm_levels: [0; 8],
+            expanded_data: [0; 256],
+        }
+    }
+
+    fn set(&mut self, index: usize, level: u8) {
+        self.pwm_levels[index] = level;
+    }
+
+    fn reflect(&mut self) {
+        for i in 0..255 {
+            self.expanded_data[i as usize] = (i > self.pwm_levels[0]) as u8
+                | ((i < self.pwm_levels[1]) as u8) << 1
+                | ((i < self.pwm_levels[2]) as u8) << 2
+                | ((i < self.pwm_levels[3]) as u8) << 3
+                | ((i < self.pwm_levels[4]) as u8) << 4
+                | ((i < self.pwm_levels[5]) as u8) << 5
+                | ((i < self.pwm_levels[6]) as u8) << 6
+                | ((i < self.pwm_levels[7]) as u8) << 7;
+        }
+    }
+
+    fn pio_shift_out<T: ValidStateMachine>(&self, tx: &mut Tx<T>, index: usize) {
+        tx.write((self.expanded_data[index] as u32) << 25);
+    }
+}
+
 fn pio_shift_register_set_output<T: ValidStateMachine>(tx: &mut Tx<T>, output: u8) {
-    tx.write(output as u32);
+    tx.write((output as u32) << 25);
 }
 
 /// Entry point to our bare-metal application.
@@ -137,16 +171,27 @@ fn main() -> ! {
     ]);
 
     // Start state machine
-    let sm = sm.start();
+    let _sm = sm.start();
 
     // Loop forever and adjust duty cycle to make te led brighter
-    let mut level = 0;
+    let mut level: u8 = 0;
+    let mut data = PwmData::new();
+
     loop {
-        info!("Level = {}", level);
-        pio_shift_register_set_output(&mut tx, level);
-        level = level.wrapping_add(1);
-        delay.delay_ms(250);
+        // We only use 7 bits.
+        level = (level + 1) % 255;
+        data.set(0, ((level + 0) % 255) as _);
+        data.set(1, ((level + 3) % 255) as _);
+        data.set(2, ((level + 6) % 255) as _);
+        data.set(3, ((level + 9) % 255) as _);
+        data.set(4, ((level + 12) % 255) as _);
+        data.set(5, ((level + 15) % 255) as _);
+        data.set(6, ((level + 18) % 255) as _);
+        data.reflect();
+
+        for i in 0..255 {
+            data.pio_shift_out(&mut tx, i);
+            delay.delay_us(50);
+        }
     }
 }
-
-// End of file
