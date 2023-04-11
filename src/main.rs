@@ -94,10 +94,6 @@ impl PwmData {
     }
 }
 
-fn pio_shift_register_set_output<T: ValidStateMachine>(tx: &mut Tx<T>, output: u8) {
-    tx.write((output as u32) << 25);
-}
-
 /// Entry point to our bare-metal application.
 ///
 /// The `#[entry]` macro ensures the Cortex-M start-up code calls this function
