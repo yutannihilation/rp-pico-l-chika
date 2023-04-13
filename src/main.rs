@@ -59,16 +59,27 @@ use rp_pico::hal;
 use hal::pio::{PIOBuilder, Tx, ValidStateMachine};
 use pio_proc::pio_file;
 
+#[derive(Debug, Clone, Copy)]
+struct PwmStep {
+    length: u8,
+    data: u8,
+}
+
 struct PwmData {
     pwm_levels: [u8; 8],
-    expanded_data: [u8; 256],
+    pub pwm_steps: [PwmStep; 9],
 }
 
 impl PwmData {
     fn new() -> Self {
+        let null_step = PwmStep {
+            length: 255,
+            data: 0,
+        };
+
         Self {
             pwm_levels: [0; 8],
-            expanded_data: [0; 256],
+            pwm_steps: [null_step; 9],
         }
     }
 
@@ -77,21 +88,37 @@ impl PwmData {
     }
 
     fn reflect(&mut self) {
-        for i in 0..255 {
-            self.expanded_data[i as usize] = (i > self.pwm_levels[0]) as u8
-                | ((i < self.pwm_levels[1]) as u8) << 1
-                | ((i < self.pwm_levels[2]) as u8) << 2
-                | ((i < self.pwm_levels[3]) as u8) << 3
-                | ((i < self.pwm_levels[4]) as u8) << 4
-                | ((i < self.pwm_levels[5]) as u8) << 5
-                | ((i < self.pwm_levels[6]) as u8) << 6
-                | ((i < self.pwm_levels[7]) as u8) << 7;
-        }
-    }
+        let mut indices: [usize; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+        indices.sort_unstable_by_key(|&i| self.pwm_levels[i]);
 
-    fn pio_shift_out<T: ValidStateMachine>(&self, tx: &mut Tx<T>, index: usize) {
-        tx.write((self.expanded_data[index] as u32) << 25);
+        let mut data = u8::MAX;
+        let mut prev_level = 0;
+        let mut cur_level = 0;
+
+        for (i, &cur_index) in indices.iter().enumerate() {
+            cur_level = self.pwm_levels[cur_index];
+
+            self.pwm_steps[i] = PwmStep {
+                length: cur_level - prev_level,
+                data,
+            };
+
+            data &= !(1 << cur_index);
+            // info!("{:b}", data);
+
+            prev_level = cur_level;
+        }
+
+        // period after all pins are set low
+        self.pwm_steps[8] = PwmStep {
+            length: u8::MAX - cur_level,
+            data: 0,
+        };
     }
+}
+
+fn pio_shift_out<T: ValidStateMachine>(tx: &mut Tx<T>, data: u32) {
+    tx.write(data);
 }
 
 /// Entry point to our bare-metal application.
@@ -176,18 +203,21 @@ fn main() -> ! {
     loop {
         // We only use 7 bits.
         level = (level + 1) % 255;
-        data.set(0, ((level + 0) % 255) as _);
-        data.set(1, ((level + 3) % 255) as _);
-        data.set(2, ((level + 6) % 255) as _);
-        data.set(3, ((level + 9) % 255) as _);
-        data.set(4, ((level + 12) % 255) as _);
-        data.set(5, ((level + 15) % 255) as _);
-        data.set(6, ((level + 18) % 255) as _);
+        data.set(0, level.wrapping_add(0) as _);
+        data.set(1, level.wrapping_add(30) as _);
+        data.set(2, level.wrapping_add(60) as _);
+        data.set(3, level.wrapping_add(90) as _);
+        data.set(4, level.wrapping_add(120) as _);
+        data.set(5, level.wrapping_add(150) as _);
+        data.set(6, level.wrapping_add(180) as _);
         data.reflect();
 
-        for i in 0..255 {
-            data.pio_shift_out(&mut tx, i);
-            delay.delay_us(50);
+        for step in data.pwm_steps {
+            pio_shift_out(&mut tx, (step.data as u32) << 25);
+            // info!("{}", step.length);
+            delay.delay_us(step.length as u32 * 100);
         }
+
+        level = level.wrapping_add(1);
     }
 }
