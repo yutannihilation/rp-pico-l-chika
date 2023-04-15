@@ -61,12 +61,12 @@ use pio_proc::pio_file;
 
 #[derive(Debug, Clone, Copy)]
 struct PwmStep {
-    length: u8,
-    data: u8,
+    length: u32,
+    data: u32,
 }
 
 struct PwmData {
-    pwm_levels: [u8; 8],
+    pwm_levels: [u32; 8],
     pub pwm_steps: [PwmStep; 9],
 }
 
@@ -83,15 +83,11 @@ impl PwmData {
         }
     }
 
-    fn set(&mut self, index: usize, level: u8) {
-        self.pwm_levels[index] = level;
-    }
-
     fn reflect(&mut self) {
         let mut indices: [usize; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
         indices.sort_unstable_by_key(|&i| self.pwm_levels[i]);
 
-        let mut data = u8::MAX;
+        let mut data = 255;
         let mut prev_level = 0;
         let mut cur_level = 0;
 
@@ -111,7 +107,7 @@ impl PwmData {
 
         // period after all pins are set low
         self.pwm_steps[8] = PwmStep {
-            length: u8::MAX - cur_level,
+            length: 255 - cur_level,
             data: 0,
         };
     }
@@ -173,7 +169,6 @@ fn main() -> ! {
     let program = pio_file!("./src/shift_register.pio", select_program("shift_register"),);
     let installed = pio0.install(&program.program).unwrap();
 
-    // Set gpio25 to pio
     let pin1: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio2.into_mode();
     let _pin2: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio3.into_mode();
     let _pin3: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio4.into_mode();
@@ -186,7 +181,6 @@ fn main() -> ! {
         .side_set_pin_base(pin1_id + 1)
         .build(sm0);
 
-    // Set pio pindir for gpio25
     sm.set_pindirs([
         (pin1_id, hal::pio::PinDir::Output),
         (pin1_id + 1, hal::pio::PinDir::Output),
@@ -196,28 +190,33 @@ fn main() -> ! {
     // Start state machine
     let _sm = sm.start();
 
-    // Loop forever and adjust duty cycle to make te led brighter
     let mut level: u8 = 0;
     let mut data = PwmData::new();
+    let mut base_pin = 0;
 
     loop {
-        // We only use 7 bits.
-        level = (level + 1) % 255;
-        data.set(0, level.wrapping_add(0) as _);
-        data.set(1, level.wrapping_add(30) as _);
-        data.set(2, level.wrapping_add(60) as _);
-        data.set(3, level.wrapping_add(90) as _);
-        data.set(4, level.wrapping_add(120) as _);
-        data.set(5, level.wrapping_add(150) as _);
-        data.set(6, level.wrapping_add(180) as _);
+        let mut data_tmp: [u32; 8] = [0; 8];
+        let next_pin = (base_pin + 1) % 7;
+
+        data_tmp[base_pin] = 255;
+        data_tmp[next_pin] = 50;
+
+        info!(
+            "cur: {}, next: {}, data: {:?}",
+            base_pin, next_pin, data_tmp
+        );
+
+        data.pwm_levels = data_tmp;
         data.reflect();
 
-        for step in data.pwm_steps {
-            pio_shift_out(&mut tx, (step.data as u32) << 25);
-            // info!("{}", step.length);
-            delay.delay_us(step.length as u32 * 100);
+        for _ in 0..30 {
+            for step in data.pwm_steps {
+                pio_shift_out(&mut tx, step.data << 24);
+                // info!("{}", level);
+                delay.delay_us(step.length * 100);
+            }
         }
 
-        level = level.wrapping_add(1);
+        base_pin = next_pin;
     }
 }
