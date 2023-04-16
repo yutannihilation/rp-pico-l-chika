@@ -42,7 +42,6 @@ mod app {
     // be linked)
     use panic_halt as _;
 
-    use defmt::info;
     use embedded_hal::digital::v2::OutputPin;
     use fugit::MicrosDurationU32;
     use rp_pico::{
@@ -51,13 +50,13 @@ mod app {
     };
 
     // Import pio crates
-    use hal::pio::{PIOBuilder, Tx, ValidStateMachine};
+    use hal::pio::{PIOBuilder, Tx};
     use pio_proc::pio_file;
 
     // Pull in any important traits
     use rp_pico::hal::prelude::*;
 
-    const SCAN_TIME_US: MicrosDurationU32 = MicrosDurationU32::secs(3);
+    const SCAN_TIME_US: MicrosDurationU32 = MicrosDurationU32::millis(100);
 
     #[derive(Debug, Clone, Copy)]
     struct PwmStep {
@@ -118,13 +117,6 @@ mod app {
         timer: hal::Timer,
         alarm: hal::timer::Alarm0,
 
-        // Note: It seems #[shared] macro doesn't support type parameter syntax,
-        //       so we cannot use AnyPin here. DynPin might work, but let's
-        //       decide which pins to use here.
-        out_pin: hal::gpio::Pin<hal::gpio::pin::bank0::Gpio2, hal::gpio::FunctionPio0>,
-        clock_pin: hal::gpio::Pin<hal::gpio::pin::bank0::Gpio3, hal::gpio::FunctionPio0>,
-        ratch_pin: hal::gpio::Pin<hal::gpio::pin::bank0::Gpio4, hal::gpio::FunctionPio0>,
-
         led: hal::gpio::Pin<hal::gpio::pin::bank0::Gpio25, hal::gpio::PushPullOutput>,
 
         tx: Tx<rp_pico::hal::pio::PIO0SM0>,
@@ -164,16 +156,16 @@ mod app {
             &mut resets,
         );
 
-        let mut pac = rp_pico::hal::pac::Peripherals::take().unwrap();
-        let (mut pio0, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
+        // Note: while the compiler never complains, we cannot use pac::Peripherals::take().unwrap() directly
+        let (mut pio0, sm0, _, _, _) = c.device.PIO0.split(&mut resets);
 
         // Create a pio program
         let program = pio_file!("./src/shift_register.pio", select_program("shift_register"),);
         let installed = pio0.install(&program.program).unwrap();
 
         let out_pin: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio2.into_mode();
-        let clock_pin: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio3.into_mode();
-        let ratch_pin: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio4.into_mode();
+        let _clock_pin: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio3.into_mode();
+        let _ratch_pin: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio4.into_mode();
 
         let mut led = pins.led.into_push_pull_output();
         led.set_low().unwrap();
@@ -181,7 +173,7 @@ mod app {
         // Build the pio program and set pin both for set and side set!
         // We are running with the default divider which is 1 (max speed)
         let out_pin_id = out_pin.id().num;
-        let (mut sm, _, mut tx) = PIOBuilder::from_program(installed)
+        let (mut sm, _, tx) = PIOBuilder::from_program(installed)
             .out_pins(out_pin_id, 1)
             .side_set_pin_base(out_pin_id + 1)
             .build(sm0);
@@ -211,9 +203,6 @@ mod app {
             Shared {
                 timer,
                 alarm,
-                out_pin,
-                clock_pin,
-                ratch_pin,
                 led,
                 tx,
                 data,
@@ -226,14 +215,18 @@ mod app {
     #[task(
         binds = TIMER_IRQ_0,
         priority = 1,
-        shared = [timer, alarm, tx, data, led],
-        local = [tog: bool = true],
+        shared = [timer, alarm, led, data, tx],
+        local = [tog: bool = true, step: u8 = 0],
     )]
     fn timer_irq(mut c: timer_irq::Context) {
-        (c.shared.data, c.shared.tx).lock(|data, tx| {
-            for step in data.pwm_steps {
-                tx.write(step.data << 24);
-            }
+        let mut timer = c.shared.timer;
+        let mut alarm = c.shared.alarm;
+        let data = c.shared.data;
+        let tx = c.shared.tx;
+
+        *c.local.step = (*c.local.step + 1) % 7;
+        (data, tx, timer).lock(|data, tx, timer| {
+            tx.write(data.pwm_steps[*c.local.step as usize].data << 24);
         });
 
         // debug
@@ -244,7 +237,6 @@ mod app {
         }
         *c.local.tog = !*c.local.tog;
 
-        let mut alarm = c.shared.alarm;
         (alarm).lock(|a| {
             a.clear_interrupt();
             let _ = a.schedule(SCAN_TIME_US);
