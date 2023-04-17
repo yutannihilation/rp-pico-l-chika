@@ -45,11 +45,8 @@ mod app {
     use panic_halt as _;
 
     use embedded_hal::digital::v2::OutputPin;
-    use fugit::{MicrosDurationU32, MicrosDurationU64};
-    use rp_pico::{
-        hal::{self, clocks::init_clocks_and_plls, timer::Alarm, watchdog::Watchdog, Sio},
-        XOSC_CRYSTAL_FREQ,
-    };
+    use fugit::MicrosDurationU64;
+    use rp_pico::hal::{self, Sio};
 
     // Import pio crates
     use hal::pio::{PIOBuilder, Tx};
@@ -60,7 +57,7 @@ mod app {
 
     use rtic_monotonics::rp2040::*;
 
-    const SCAN_TIME_US: MicrosDurationU32 = MicrosDurationU32::millis(100);
+    const SCAN_TIME_US: MicrosDurationU64 = MicrosDurationU64::millis(100);
 
     #[derive(Debug, Clone, Copy)]
     struct PwmStep {
@@ -191,27 +188,13 @@ mod app {
         (Shared { data }, Local { tx, led })
     }
 
-    // #[idle(shared = [led])]
-    // fn background(mut c: background::Context) -> ! {
+    // #[task(
+    //     shared = [data],
+    //     local = [i: u8 = 0]
+    // )]
+    // async fn update_data(c: update_data::Context) {
     //     loop {
-    //         c.shared.led.lock(|l| l.set_low().unwrap());
-    //         Timer::delay(5000.millis());
-    //         c.shared.led.lock(|l| l.set_high().unwrap());
-    //         Timer::delay(5000.millis());
-    //     }
-    // }
-
-    // #[task(local = [led, tog: bool = true])]
-    // async fn blink(cx: blink::Context) {
-    //     loop {
-    //         if *cx.local.tog {
-    //             cx.local.led.set_high().unwrap();
-    //             *cx.local.tog = false;
-    //         } else {
-    //             cx.local.led.set_low().unwrap();
-    //             *cx.local.tog = true;
-    //         }
-    //         Timer::delay(10.millis()).await;
+    //         Timer::delay(SCAN_TIME_US).await;
     //     }
     // }
 
