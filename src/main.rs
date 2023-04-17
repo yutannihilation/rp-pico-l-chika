@@ -44,7 +44,7 @@ mod app {
     // use panic_probe as _;
     use panic_halt as _;
 
-    use embedded_hal::digital::v2::OutputPin;
+    use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
     use fugit::MicrosDurationU64;
     use rp_pico::hal::{self, Sio};
 
@@ -133,6 +133,21 @@ mod app {
         let token = rtic_monotonics::create_rp2040_monotonic_token!();
         Timer::start(c.device.TIMER, &mut resets, token);
 
+        // While this doesn't use the `clock` object, it seems this code is
+        // needed to initialize the clock.
+        let mut watchdog = rp_pico::hal::watchdog::Watchdog::new(c.device.WATCHDOG);
+        let _clocks = rp_pico::hal::clocks::init_clocks_and_plls(
+            rp_pico::XOSC_CRYSTAL_FREQ,
+            c.device.XOSC,
+            c.device.CLOCKS,
+            c.device.PLL_SYS,
+            c.device.PLL_USB,
+            &mut resets,
+            &mut watchdog,
+        )
+        .ok()
+        .unwrap();
+
         // Soft-reset does not release the hardware spinlocks
         // Release them now to avoid a deadlock after debug or watchdog reset
         unsafe {
@@ -200,7 +215,7 @@ mod app {
 
     #[task(
         shared = [&data],
-        local = [led, tx, tog: bool = true, step: u8 = 0],
+        local = [led, tx, step: u8 = 0],
     )]
     async fn timer_irq(c: timer_irq::Context) {
         let data = c.shared.data;
@@ -210,18 +225,13 @@ mod app {
             for step in data.pwm_steps {
                 tx.write(step.data << 24);
 
-                let delay_ms = (step.length as u64).micros();
+                let delay_ms = ((step.length * 100) as u64).micros();
                 Timer::delay(delay_ms).await;
             }
             *c.local.step = (*c.local.step + 1) % 7;
 
             // debug
-            if *c.local.tog {
-                c.local.led.set_high().unwrap();
-            } else {
-                c.local.led.set_low().unwrap();
-            }
-            *c.local.tog = !*c.local.tog;
+            let _ = c.local.led.toggle();
         }
     }
 }
