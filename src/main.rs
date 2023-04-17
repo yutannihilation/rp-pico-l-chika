@@ -34,16 +34,18 @@
 
 #![no_std]
 #![no_main]
+#![feature(type_alias_impl_trait)]
 
+// TIMER_IRQ_1 is chosen probably because TIMER_IRQ_0 is used by the Timer by default?
+// cf., https://github.com/rtic-rs/rtic/blob/ef8046b060a375fd5e6b23d62c3a9a303bbd6e11/rtic-monotonics/src/rp2040.rs#L170
 #[rtic::app(device = rp_pico::hal::pac, peripherals = true)]
 mod app {
 
-    // Ensure we halt the program on panic (if we don't mention this crate it won't
-    // be linked)
+    // use panic_probe as _;
     use panic_halt as _;
 
     use embedded_hal::digital::v2::OutputPin;
-    use fugit::MicrosDurationU32;
+    use fugit::{MicrosDurationU32, MicrosDurationU64};
     use rp_pico::{
         hal::{self, clocks::init_clocks_and_plls, timer::Alarm, watchdog::Watchdog, Sio},
         XOSC_CRYSTAL_FREQ,
@@ -55,6 +57,8 @@ mod app {
 
     // Pull in any important traits
     use rp_pico::hal::prelude::*;
+
+    use rtic_monotonics::rp2040::*;
 
     const SCAN_TIME_US: MicrosDurationU32 = MicrosDurationU32::millis(100);
 
@@ -114,39 +118,29 @@ mod app {
 
     #[shared]
     struct Shared {
-        timer: hal::Timer,
-        alarm: hal::timer::Alarm0,
-
-        led: hal::gpio::Pin<hal::gpio::pin::bank0::Gpio25, hal::gpio::PushPullOutput>,
-
-        tx: Tx<rp_pico::hal::pio::PIO0SM0>,
-
         data: PwmData,
     }
 
     #[local]
-    struct Local {}
+    struct Local {
+        // tx ix is used in only one task, so this can be Local
+        tx: Tx<rp_pico::hal::pio::PIO0SM0>,
+
+        // TODO: This LED is for debugging. Remove this later.
+        led: hal::gpio::Pin<hal::gpio::pin::bank0::Gpio25, hal::gpio::PushPullOutput>,
+    }
 
     #[init]
-    fn init(c: init::Context) -> (Shared, Local, init::Monotonics) {
+    fn init(c: init::Context) -> (Shared, Local) {
+        let mut resets = c.device.RESETS;
+        let token = rtic_monotonics::create_rp2040_monotonic_token!();
+        Timer::start(c.device.TIMER, &mut resets, token);
+
         // Soft-reset does not release the hardware spinlocks
         // Release them now to avoid a deadlock after debug or watchdog reset
         unsafe {
             hal::sio::spinlock_reset();
         }
-        let mut resets = c.device.RESETS;
-        let mut watchdog = Watchdog::new(c.device.WATCHDOG);
-        let _clocks = init_clocks_and_plls(
-            XOSC_CRYSTAL_FREQ,
-            c.device.XOSC,
-            c.device.CLOCKS,
-            c.device.PLL_SYS,
-            c.device.PLL_USB,
-            &mut resets,
-            &mut watchdog,
-        )
-        .ok()
-        .unwrap();
 
         let sio = Sio::new(c.device.SIO);
         let pins = rp_pico::Pins::new(
@@ -187,59 +181,64 @@ mod app {
         // Start state machine
         let _sm = sm.start();
 
-        let mut level: u8 = 0;
         let mut data = PwmData::new();
-        let mut base_pin = 0;
 
-        data.pwm_levels = [0, 20, 40, 0, 80, 0, 160, 240];
+        data.pwm_levels = [0, 10, 40, 0, 180, 90, 0, 130];
         data.reflect();
 
-        let mut timer = hal::Timer::new(c.device.TIMER, &mut resets);
-        let mut alarm = timer.alarm_0().unwrap();
-        let _ = alarm.schedule(SCAN_TIME_US);
-        alarm.enable_interrupt();
+        timer_irq::spawn().ok();
 
-        (
-            Shared {
-                timer,
-                alarm,
-                led,
-                tx,
-                data,
-            },
-            Local {},
-            init::Monotonics(),
-        )
+        (Shared { data }, Local { tx, led })
     }
 
+    // #[idle(shared = [led])]
+    // fn background(mut c: background::Context) -> ! {
+    //     loop {
+    //         c.shared.led.lock(|l| l.set_low().unwrap());
+    //         Timer::delay(5000.millis());
+    //         c.shared.led.lock(|l| l.set_high().unwrap());
+    //         Timer::delay(5000.millis());
+    //     }
+    // }
+
+    // #[task(local = [led, tog: bool = true])]
+    // async fn blink(cx: blink::Context) {
+    //     loop {
+    //         if *cx.local.tog {
+    //             cx.local.led.set_high().unwrap();
+    //             *cx.local.tog = false;
+    //         } else {
+    //             cx.local.led.set_low().unwrap();
+    //             *cx.local.tog = true;
+    //         }
+    //         Timer::delay(10.millis()).await;
+    //     }
+    // }
+
     #[task(
-        binds = TIMER_IRQ_0,
-        priority = 1,
-        shared = [timer, alarm, led, data, tx],
-        local = [tog: bool = true, step: u8 = 0],
+        shared = [&data],
+        local = [led, tx, tog: bool = true, step: u8 = 0],
     )]
-    fn timer_irq(mut c: timer_irq::Context) {
-        let mut timer = c.shared.timer;
-        let mut alarm = c.shared.alarm;
+    async fn timer_irq(c: timer_irq::Context) {
         let data = c.shared.data;
-        let tx = c.shared.tx;
+        let tx = c.local.tx;
 
-        *c.local.step = (*c.local.step + 1) % 7;
-        (data, tx, timer).lock(|data, tx, timer| {
-            tx.write(data.pwm_steps[*c.local.step as usize].data << 24);
-        });
+        loop {
+            for step in data.pwm_steps {
+                tx.write(step.data << 24);
 
-        // debug
-        if *c.local.tog {
-            c.shared.led.lock(|l| l.set_high().unwrap());
-        } else {
-            c.shared.led.lock(|l| l.set_low().unwrap());
+                let delay_ms = (step.length as u64).micros();
+                Timer::delay(delay_ms).await;
+            }
+            *c.local.step = (*c.local.step + 1) % 7;
+
+            // debug
+            if *c.local.tog {
+                c.local.led.set_high().unwrap();
+            } else {
+                c.local.led.set_low().unwrap();
+            }
+            *c.local.tog = !*c.local.tog;
         }
-        *c.local.tog = !*c.local.tog;
-
-        (alarm).lock(|a| {
-            a.clear_interrupt();
-            let _ = a.schedule(SCAN_TIME_US);
-        });
     }
 }

@@ -1,4 +1,7 @@
 {
+    "rust-analyzer.server.extraEnv": {
+        "RUSTUP_TOOLCHAIN": "nightly",
+    },
     "rust-analyzer.cargo.target": "thumbv6m-none-eabi",
     "rust-analyzer.checkOnSave.allTargets": false,
     "editor.formatOnSave": true

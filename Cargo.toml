@@ -33,7 +33,12 @@ pio-proc = "0.2.1"
 
 # For timer handling
 fugit = { version = "0.3", features = ["defmt"] }
-cortex-m-rtic = "1"
+rtic = { git = "https://github.com/rtic-rs/rtic", features = [
+    "thumbv6-backend",
+] }
+rtic-monotonics = { git = "https://github.com/rtic-rs/rtic", features = [
+    "rp2040",
+] }
 
 # cargo build/run
 [profile.dev]
