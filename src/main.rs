@@ -36,7 +36,7 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
-// TIMER_IRQ_1 is chosen probably because TIMER_IRQ_0 is used by the Timer by default?
+// repeat_pwm_1 is chosen probably because repeat_pwm_0 is used by the Timer by default?
 // cf., https://github.com/rtic-rs/rtic/blob/ef8046b060a375fd5e6b23d62c3a9a303bbd6e11/rtic-monotonics/src/rp2040.rs#L170
 #[rtic::app(device = rp_pico::hal::pac, peripherals = true)]
 mod app {
@@ -198,7 +198,7 @@ mod app {
         data.pwm_levels = [0, 10, 40, 0, 180, 90, 0, 130];
         data.reflect();
 
-        timer_irq::spawn().ok();
+        repeat_pwm::spawn().ok();
 
         (Shared { data }, Local { tx, led })
     }
@@ -217,7 +217,7 @@ mod app {
         shared = [&data],
         local = [led, tx, step: u8 = 0],
     )]
-    async fn timer_irq(c: timer_irq::Context) {
+    async fn repeat_pwm(c: repeat_pwm::Context) {
         let data = c.shared.data;
         let tx = c.local.tx;
 
