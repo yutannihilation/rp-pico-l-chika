@@ -195,34 +195,47 @@ mod app {
 
         let mut data = PwmData::new();
 
-        data.pwm_levels = [0, 10, 40, 0, 180, 90, 0, 130];
+        data.pwm_levels = [0, 10, 40, 0, 180, 90, 130, 0];
         data.reflect();
 
         repeat_pwm::spawn().ok();
+        update_data::spawn().ok();
 
         (Shared { data }, Local { tx, led })
     }
 
-    // #[task(
-    //     shared = [data],
-    //     local = [i: u8 = 0]
-    // )]
-    // async fn update_data(c: update_data::Context) {
-    //     loop {
-    //         Timer::delay(SCAN_TIME_US).await;
-    //     }
-    // }
+    #[task(
+        shared = [data],
+        local = [i: u8 = 0]
+    )]
+    async fn update_data(c: update_data::Context) {
+        let mut data = c.shared.data;
+        loop {
+            data.lock(|data| {
+                let last = data.pwm_levels[7];
+                for i in 0..6 {
+                    data.pwm_levels[i + 1] = data.pwm_levels[i];
+                }
+                data.pwm_levels[0] = last;
+
+                // data.reflect();
+            });
+
+            Timer::delay(1000.millis()).await;
+        }
+    }
 
     #[task(
-        shared = [&data],
+        shared = [data],
         local = [led, tx, step: u8 = 0],
     )]
     async fn repeat_pwm(c: repeat_pwm::Context) {
-        let data = c.shared.data;
+        let mut data = c.shared.data;
         let tx = c.local.tx;
 
         loop {
-            for step in data.pwm_steps {
+            let steps = data.lock(|data| data.pwm_steps);
+            for step in steps {
                 tx.write(step.data << 24);
 
                 let delay_ms = ((step.length * 100) as u64).micros();
