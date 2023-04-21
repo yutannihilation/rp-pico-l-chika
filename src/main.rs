@@ -44,8 +44,6 @@ mod app {
     // use panic_probe as _;
     use panic_halt as _;
 
-    use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
-    use fugit::MicrosDurationU64;
     use rp_pico::hal::{self, Sio};
 
     // Import pio crates
@@ -56,8 +54,6 @@ mod app {
     use rp_pico::hal::prelude::*;
 
     use rtic_monotonics::rp2040::*;
-
-    const SCAN_TIME_US: MicrosDurationU64 = MicrosDurationU64::millis(100);
 
     #[derive(Debug, Clone, Copy)]
     struct PwmStep {
@@ -122,9 +118,6 @@ mod app {
     struct Local {
         // tx ix is used in only one task, so this can be Local
         tx: Tx<rp_pico::hal::pio::PIO0SM0>,
-
-        // TODO: This LED is for debugging. Remove this later.
-        led: hal::gpio::Pin<hal::gpio::pin::bank0::Gpio25, hal::gpio::PushPullOutput>,
     }
 
     #[init]
@@ -173,9 +166,6 @@ mod app {
         let _clock_pin: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio3.into_mode();
         let _ratch_pin: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio4.into_mode();
 
-        let mut led = pins.led.into_push_pull_output();
-        led.set_low().unwrap();
-
         // Build the pio program and set pin both for set and side set!
         // We are running with the default divider which is 1 (max speed)
         let out_pin_id = out_pin.id().num;
@@ -195,13 +185,13 @@ mod app {
 
         let mut data = PwmData::new();
 
-        data.pwm_levels = [0, 10, 40, 0, 180, 90, 130, 0];
+        data.pwm_levels = [0, 100, 30, 10, 0, 255, 100, 50];
         data.reflect();
 
         repeat_pwm::spawn().ok();
         update_data::spawn().ok();
 
-        (Shared { data }, Local { tx, led })
+        (Shared { data }, Local { tx })
     }
 
     #[task(
@@ -212,22 +202,22 @@ mod app {
         let mut data = c.shared.data;
         loop {
             data.lock(|data| {
-                let last = data.pwm_levels[7];
+                let first = data.pwm_levels[0];
                 for i in 0..6 {
-                    data.pwm_levels[i + 1] = data.pwm_levels[i];
+                    data.pwm_levels[i] = data.pwm_levels[i + 1];
                 }
-                data.pwm_levels[0] = last;
+                data.pwm_levels[6] = first;
 
-                // data.reflect();
+                data.reflect();
             });
 
-            Timer::delay(1000.millis()).await;
+            Timer::delay(100.millis()).await;
         }
     }
 
     #[task(
         shared = [data],
-        local = [led, tx, step: u8 = 0],
+        local = [tx, step: u8 = 0],
     )]
     async fn repeat_pwm(c: repeat_pwm::Context) {
         let mut data = c.shared.data;
@@ -238,13 +228,10 @@ mod app {
             for step in steps {
                 tx.write(step.data << 24);
 
-                let delay_ms = ((step.length * 100) as u64).micros();
+                let delay_ms = ((step.length * 20) as u64).micros();
                 Timer::delay(delay_ms).await;
             }
             *c.local.step = (*c.local.step + 1) % 7;
-
-            // debug
-            let _ = c.local.led.toggle();
         }
     }
 }
