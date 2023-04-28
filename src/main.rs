@@ -36,6 +36,23 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
+// These math functions come from https://github.com/tarcieri/micromath/blob/main/src/float/floor.rs
+
+fn floor(x: f32) -> f32 {
+    let res = (x as i32) as f32;
+
+    if x < res {
+        res - 1.0
+    } else {
+        res
+    }
+}
+
+#[inline]
+fn ceil(x: f32) -> f32 {
+    -floor(-x)
+}
+
 // repeat_pwm_1 is chosen probably because repeat_pwm_0 is used by the Timer by default?
 // cf., https://github.com/rtic-rs/rtic/blob/ef8046b060a375fd5e6b23d62c3a9a303bbd6e11/rtic-monotonics/src/rp2040.rs#L170
 #[rtic::app(device = rp_pico::hal::pac, peripherals = true)]
@@ -185,7 +202,7 @@ mod app {
 
         let mut data = PwmData::new();
 
-        data.pwm_levels = [0, 100, 30, 10, 0, 255, 100, 50];
+        data.pwm_levels = [0; 8];
         data.reflect();
 
         repeat_pwm::spawn().ok();
@@ -196,22 +213,29 @@ mod app {
 
     #[task(
         shared = [data],
-        local = [i: u8 = 0]
+        local = [cur_pos: f32  = 0.0]
     )]
     async fn update_data(c: update_data::Context) {
         let mut data = c.shared.data;
         loop {
             data.lock(|data| {
-                let first = data.pwm_levels[0];
-                for i in 0..6 {
-                    data.pwm_levels[i] = data.pwm_levels[i + 1];
-                }
-                data.pwm_levels[6] = first;
+                let cur_index = super::floor(*c.local.cur_pos);
+                let fract = *c.local.cur_pos - cur_index;
+
+                let cur_index = cur_index as usize;
+                let prev_index = (cur_index + 7 - 1) % 7;
+                let next_index = (cur_index + 7 + 1) % 7;
+
+                data.pwm_levels[prev_index] = 0;
+                data.pwm_levels[cur_index] = (255. * (1.0 - fract)) as u32;
+                data.pwm_levels[next_index] = (255. * (fract - 0.4) * 1.667) as u32;
 
                 data.reflect();
             });
 
-            Timer::delay(100.millis()).await;
+            *c.local.cur_pos = (*c.local.cur_pos + 0.03) % 7.0;
+
+            Timer::delay(15.millis()).await;
         }
     }
 
