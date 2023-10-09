@@ -141,7 +141,7 @@ mod app {
     fn init(c: init::Context) -> (Shared, Local) {
         let mut resets = c.device.RESETS;
         let token = rtic_monotonics::create_rp2040_monotonic_token!();
-        Timer::start(c.device.TIMER, &mut resets, token);
+        Timer::start(c.device.TIMER, &resets, token);
 
         // While this doesn't use the `clock` object, it seems this code is
         // needed to initialize the clock.
