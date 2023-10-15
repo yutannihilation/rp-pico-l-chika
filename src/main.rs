@@ -179,9 +179,9 @@ mod app {
         let program = pio_file!("./src/shift_register.pio", select_program("shift_register"),);
         let installed = pio0.install(&program.program).unwrap();
 
-        let out_pin: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio2.into_mode();
-        let _clock_pin: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio3.into_mode();
-        let _ratch_pin: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio4.into_mode();
+        let out_pin = pins.gpio2.into_function::<hal::gpio::FunctionPio0>();
+        let _clock_pin = pins.gpio3.into_function::<hal::gpio::FunctionPio0>();
+        let _ratch_pin = pins.gpio4.into_function::<hal::gpio::FunctionPio0>();
 
         // Build the pio program and set pin both for set and side set!
         // We are running with the default divider which is 1 (max speed)
@@ -191,8 +191,9 @@ mod app {
             .side_set_pin_base(out_pin_id + 1)
             .build(sm0);
 
+        #[rustfmt::skip]
         sm.set_pindirs([
-            (out_pin_id, hal::pio::PinDir::Output),
+            (out_pin_id,     hal::pio::PinDir::Output),
             (out_pin_id + 1, hal::pio::PinDir::Output),
             (out_pin_id + 2, hal::pio::PinDir::Output),
         ]);
