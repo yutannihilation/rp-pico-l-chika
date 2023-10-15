@@ -38,6 +38,7 @@
 
 // These math functions come from https://github.com/tarcieri/micromath/blob/main/src/float/floor.rs
 
+#[inline]
 fn floor(x: f32) -> f32 {
     let res = (x as i32) as f32;
 
@@ -46,11 +47,6 @@ fn floor(x: f32) -> f32 {
     } else {
         res
     }
-}
-
-#[inline]
-fn ceil(x: f32) -> f32 {
-    -floor(-x)
 }
 
 // repeat_pwm_1 is chosen probably because repeat_pwm_0 is used by the Timer by default?
@@ -235,7 +231,7 @@ mod app {
                 data.reflect();
             });
 
-            *c.local.cur_pos = (*c.local.cur_pos + 0.03) % 7.0;
+            *c.local.cur_pos = (*c.local.cur_pos + 0.03) % 8.0;
 
             Timer::delay(15.millis()).await;
         }
