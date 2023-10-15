@@ -58,7 +58,8 @@ fn ceil(x: f32) -> f32 {
 #[rtic::app(device = rp_pico::hal::pac, peripherals = true)]
 mod app {
 
-    // use panic_probe as _;
+    use defmt::info;
+    use defmt_rtt as _;
     use panic_halt as _;
 
     use rp_pico::hal::{self, Sio};
